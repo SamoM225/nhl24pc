@@ -53,8 +53,17 @@ jobs:
         append-timestamp: false
         key: ${{ env.cache-name }}-${{ hashFiles('**/CMakeLists.txt', 'cmake/**') }}
 
+    # The release nhl24.exe is built locally with LLVM 23 (tools/build_nhlport.ps1); the runner's
+    # clang-cl 20 build crashes (device lost) ~60 s in at the Press Start screen, so match it.
+    - name: Install LLVM 23
+      shell: pwsh
+      run: |
+        Invoke-WebRequest https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.3/LLVM-23.1.3-win64.msi -OutFile llvm.msi
+        Start-Process msiexec -Wait -ArgumentList '/i','llvm.msi','/qn','INSTALLDIR=C:\llvm23'
+        C:\llvm23\bin\clang-cl.exe --version
+
     - name: Configure CMake
-      run: cmake --fresh -G Ninja -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      run: cmake --fresh -G Ninja -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_C_COMPILER=C:/llvm23/bin/clang-cl.exe -DCMAKE_CXX_COMPILER=C:/llvm23/bin/clang-cl.exe -DENABLE_DISCORD_RPC=OFF -DENABLE_UPDATER=OFF -DHAVE_ENDIAN_H=0 -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
     - name: Build nhl24.exe
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS
