@@ -107,6 +107,20 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
                        reqs.memoryTypeBits)
             .value();
+    // nhlport: arena backing is allocated straight from VRAM and never freed; on 4 GB cards a
+    // match load runs out (ErrorOutOfDeviceMemory). Keep a system-RAM type to spill into.
+    const auto& mem_props = instance.GetMemoryProperties();
+    for (u32 i = 0; i < mem_props.memoryTypeCount; ++i) {
+        const auto heap_flags = mem_props.memoryHeaps[mem_props.memoryTypes[i].heapIndex].flags;
+        if (((reqs.memoryTypeBits >> i) & 1) &&
+            !(heap_flags & vk::MemoryHeapFlagBits::eDeviceLocal)) {
+            arena_fallback_memory_type_index = i;
+            break;
+        }
+    }
+    LOG_INFO(Render, "Arena memory type {} (types {:#x}), system-RAM fallback type {}",
+             arena_memory_type_index, reqs.memoryTypeBits,
+             arena_fallback_memory_type_index ? int(*arena_fallback_memory_type_index) : -1);
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * NUM_ARENA_PAGES) * sizeof(vk::DeviceAddress);
@@ -507,12 +521,23 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     const vk::MemoryAllocateFlagsInfo alloc_flags = {
         .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
     };
-    const vk::MemoryAllocateInfo alloc_info = {
+    vk::MemoryAllocateInfo alloc_info = {
         .pNext = &alloc_flags,
         .allocationSize = resident_blocks << block_shift,
         .memoryTypeIndex = arena_memory_type_index,
     };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
+    auto alloc_result = instance.GetDevice().allocateMemory(alloc_info);
+    if (alloc_result.result == vk::Result::eErrorOutOfDeviceMemory &&
+        arena_fallback_memory_type_index) {
+        static std::atomic<u64> n{0};
+        if (n.fetch_add(1, std::memory_order_relaxed) % 256 == 0) {
+            LOG_WARNING(Render, "VRAM full: arena backing of {} KB goes to system RAM (#{})",
+                        alloc_info.allocationSize >> 10, n.load(std::memory_order_relaxed));
+        }
+        alloc_info.memoryTypeIndex = *arena_fallback_memory_type_index;
+        alloc_result = instance.GetDevice().allocateMemory(alloc_info);
+    }
+    const auto device_memory = Vulkan::Check(std::move(alloc_result));
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
