@@ -121,6 +121,11 @@ public:
         auto& image = image_resources[index];
         image.is_atomic |= desc.is_atomic;
         image.is_written |= desc.is_written;
+        // nhlport: a T# read both plainly and with a compare (_C) opcode shares this descriptor;
+        // if the plain read came first it stayed a colour view (R16Unorm) and the compare sampler
+        // hit it, which NVIDIA faults on (Xid 13 "TEX FORMAT" -> device lost). A depth view is
+        // valid for both kinds of reads.
+        image.is_depth |= desc.is_depth;
         return index;
     }
 
